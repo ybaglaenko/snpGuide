@@ -12,4 +12,3 @@ This was made primarily for internal use for my lab (www.baglaenkolab.com). You 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/4b19980a-f93f-460a-89e9-cbb1260d35ff" alt="SNPguide Steps">
 </p>
-![SNPgudeSteps](https://github.com/user-attachments/assets/4b19980a-f93f-460a-89e9-cbb1260d35ff)
