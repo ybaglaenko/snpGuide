@@ -1,11 +1,18 @@
-## app.R
-
-version <- "0.7"
-update  <- "Jan 13th, 2026"
+## app.R -- snpGuide interactive application (shinyapps.io deployment)
+##
+## Deploy together with global.R, which supplies the design functions.
+## To use the package here instead, install it locally with
+## remotes::install_github("ybaglaenko/snpguideR") first, then swap the
+## source() line for library(snpguideR) -- rsconnect records the GitHub source
+## from your local library. See REDEPLOY.md.
+version <- "0.9"
+update  <- "November 18, 2026"
 changes <- paste(
-  "Removed BSgenome dependency (Ensembl sequence/region).", "\t", 
-  "Forced protospacer mode requires SNP within editing window; enzyme assigned by A/C in window.","\t",
-  "Progress bar + no-guides modal.","\t",
+  "Variant data now comes from NCBI dbSNP; the Ensembl REST API this tool used is frozen and unreliable.", "\t",
+  "snpGuide is now available as an R package: remotes::install_github('ybaglaenko/snpguideR'), then snpguideR::run_snpGuide_app().", "\t",
+  "App logic moved into the package; this interface is unchanged.", "\t",
+  "Forced protospacer mode requires SNP within editing window; enzyme assigned by A/C in window.", "\t",
+  "Progress bar + no-guides modal.", "\t",
   "Improved reactivity: auto-run (debounced) for single rsID, and reliable single-click execution."
 )
 
@@ -16,6 +23,8 @@ library(purrr)
 library(shinyjs)
 
 source("global.R")
+
+default_rsids <- c("rs12722517", "rs7920946", "rs791593", "rs11597237", "rs12722497")
 
 ui <- fluidPage(
   shinyjs::useShinyjs(),
@@ -28,6 +37,23 @@ ui <- fluidPage(
       p(""),
       em(paste0("Latest Change: ", changes)),
       p(""),
+
+      wellPanel(
+        strong("Now available as an R package"),
+        p(""),
+        HTML(
+          "Run the same designs locally or in a script:<br>",
+          "<code>remotes::install_github(\"ybaglaenko/snpguideR\")</code><br>",
+          "<code>library(snpguideR)</code><br>",
+          "<code>snpGuide(\"rs61839660\")</code><br>",
+          "<code>snpGuide_batch(example_rsids())</code><br>",
+          "<code>run_snpGuide_app()</code>  # this interface<br><br>",
+          "The package needs <code>Biostrings</code> from Bioconductor:<br>",
+          "<code>BiocManager::install(\"Biostrings\")</code><br><br>",
+          "Source: <a href=\"https://github.com/ybaglaenko/snpguideR\">github.com/ybaglaenko/snpguideR</a>"
+        )
+      ),
+
       em("Please email yuriy.baglaenko@cchmc.org with any questions, comments, or concerns."),
       p(""),
       tags$a(href = "https://www.baglaenkolab.com", em("Check us out at baglaenkolab.com")),
@@ -91,9 +117,6 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
 
-  # -------------------------
-  # Modal must be defined BEFORE it can be called reliably
-  # -------------------------
   show_no_guides_modal <- function() {
     showModal(modalDialog(
       title = "No guides found",
@@ -113,14 +136,10 @@ server <- function(input, output, session) {
     ))
   }
 
-  # -------------------------
-  # State
-  # -------------------------
   results <- reactiveVal(NULL)
   running <- reactiveVal(FALSE)
-  mode <- reactiveVal("normal")  # "normal" or "forced"
+  mode <- reactiveVal("normal")
 
-  # Debounced snapshot of inputs (prevents spamming while typing)
   inputs_debounced <- reactive({
     list(
       rsID = trimws(input$rsID),
@@ -133,9 +152,6 @@ server <- function(input, output, session) {
     )
   }) %>% debounce(700)
 
-  # -------------------------
-  # Compute helper with progress + button disable
-  # -------------------------
   run_with_progress <- function(rsids, force_mode) {
     rsids <- unique(trimws(rsids))
     rsids <- rsids[nzchar(rsids)]
@@ -171,7 +187,6 @@ server <- function(input, output, session) {
   run_analysis <- function(force_mode) {
     if (isTRUE(running())) return(invisible(NULL))
 
-    # Validate input early (no silent req() failures)
     if (!nzchar(trimws(input$rsID)) && is.null(input$upload)) {
       showNotification("Enter an rsID or upload a batch .txt file.", type = "warning", duration = 5)
       return(invisible(NULL))
@@ -201,9 +216,6 @@ server <- function(input, output, session) {
     invisible(NULL)
   }
 
-  # -------------------------
-  # Buttons: always run on first click
-  # -------------------------
   observeEvent(input$run_normal, {
     mode("normal")
     run_analysis(force_mode = FALSE)
@@ -214,28 +226,17 @@ server <- function(input, output, session) {
     run_analysis(force_mode = TRUE)
   }, ignoreInit = TRUE)
 
-# Auto-run (single rsID only) after typing stops
-observeEvent(inputs_debounced(), {
-  if (!isTRUE(input$auto_run)) return()
+  observeEvent(inputs_debounced(), {
+    if (!isTRUE(input$auto_run)) return()
 
-  x <- inputs_debounced()
+    x <- inputs_debounced()
+    if (!is.null(x$upload)) return()
+    if (!nzchar(x$rsID)) return()
+    if (isTRUE(running())) return()
 
-  # Don't auto-run in batch mode
-  if (!is.null(x$upload)) return()
+    run_analysis(force_mode = (mode() == "forced"))
+  }, ignoreInit = TRUE)
 
-  # Must have rsID
-  if (!nzchar(x$rsID)) return()
-
-  # Avoid re-entrancy
-  if (isTRUE(running())) return()
-
-  # Run immediately inside reactive context
-  run_analysis(force_mode = (mode() == "forced"))
-}, ignoreInit = TRUE)
-
-  # -------------------------
-  # Outputs
-  # -------------------------
   output$df <- renderDT({
     req(results())
     DT::datatable(
@@ -260,10 +261,12 @@ observeEvent(inputs_debounced(), {
   output$download_example <- downloadHandler(
     filename = function() "example_input.txt",
     content = function(file) {
-      writeLines(
-        c("rs12722517", "rs7920946", "rs791593", "rs11597237", "rs12722497"),
-        file
-      )
+      ids <- if (exists("example_rsids", mode = "function")) {
+        example_rsids()
+      } else {
+        default_rsids
+      }
+      writeLines(ids, file)
     }
   )
 }
